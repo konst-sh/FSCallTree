@@ -6,6 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Remove="bin\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Include="Program.fs" />
   </ItemGroup>
 
