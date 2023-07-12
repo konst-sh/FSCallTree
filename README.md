@@ -1,7 +1,7 @@
 # FSCallTree
 This command line utility extracts function definitions and call structure for Onshape FeatureScript JS-like language.
 When started in the folder containing number of text files with the FS code it will create Call trees output in a new folder for every text file.
-Multiple functions, features, predicates declarations are handled, the code from function presonditions is currently ignored.
+Multiple functions, features, predicates declarations are handled, the code from function preconditions is currently ignored.
 For example given the file `Array utils.txt` with the content:
 ```
 export function groupBy(arr is array, tolerance, f is function) returns array
