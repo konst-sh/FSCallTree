@@ -1,0 +1,754 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"name":"csharp"},{"aliases":[],"languageName":"fsharp","name":"fsharp"}]}}
+
+#!fsharp
+
+let sample = """
+FeatureScript 1948;
+import(path : "onshape/std/geometry.fs", version : "1948.0");
+import(path : "3354b8b7ffd5f9beaf396a63", version : "bae09c53fdd37d9f6ab2d550");
+import(path : "17c0aeb181a139b7190bcc2d", version : "e289a3fb10bc74abeb46b12b"); //geometry
+import(path : "7faab25dbecef78267a59fda", version : "7f0b6beaf1ad9071095516f7");
+
+annotation { "Feature Type Name" : "My Feature" }
+export const myFeature = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        annotation {"Name": "Some intput field"}
+        isAnything(definition.someInputField);
+
+        annotation {"Name": "Other intput field"}
+        isLength(definition.lengthInputField, LENGTH_BOUNDS);
+    }
+    {
+        sin(x);
+    });
+
+/**
+ * Evaluates query and returns map with values of array of individual query items and array size
+ * @returns {{
+ *  @field items {array}: array of evaluated query
+ *  @field size {number}: size of array
+ * }}
+ */
+export function evQuery(context is Context, query is Query) returns map
+{
+    const innerFunction = function(arg){ return arg; };
+    const evQ = evaluateQuery(context, query);
+    return { "items" : evQ, "size" : size(evQ) };
+}
+
+/**
+ * `evaluateQuery()` with arguments in reversed order
+ */
+export function evaluateQuery(query is Query, context is Context) returns array
+{
+    const arr = arr->mapArray(function(item)
+    {
+        return sin(item) + cos(item);
+    });
+    return evaluateQuery(context, query);
+}
+
+const topAnonymous = function(arg1, arg2){ 
+    f(x);
+    return arg; };
+"""
+
+#!fsharp
+
+#r "nuget: FParsec, 1.1.1"
+open FParsec
+
+#!fsharp
+
+let inline (<!>)<'Res, 'State when 'State:(member toShortString: unit -> string)> (p: Parser<'Res,'State>) label : Parser<'Res,'State> =
+    fun stream ->
+        printfn $"{stream.Position}: Entering '{label}' with UserState = {stream.UserState.toShortString()}"
+        let reply = p stream
+        printfn $"{stream.Position}: Leaving '{label}' ({reply.Status}) with UserState = {stream.UserState.toShortString()}"   
+        reply
+(*
+let withStartPos (p: Parser<'Res,'State>) : Parser<'Res * Position,'State > =
+    fun stream ->
+        let position = stream.Position
+        let reply = p stream
+        Reply(reply.Status, (reply.Result, position), reply.Error)
+*)
+let (>>>=) (p: Parser<'a,'u>) (f: 'a -> Position -> Parser<'b,'u>): Parser<'b, 'u> =
+    fun stream ->
+        let position = stream.Position
+        let reply1 = p stream
+        if reply1.Status = Ok then
+            let p2 = f reply1.Result position
+            let stateTag = stream.StateTag
+            let mutable reply2 = p2 stream
+            if stateTag = stream.StateTag then
+                reply2.Error <- mergeErrors reply1.Error reply2.Error
+            reply2
+        else
+            Reply(reply1.Status, reply1.Error)
+
+let printReturn label p =
+    p >>= fun content -> 
+        printfn $"Result from parser {label} = {content}"; 
+        preturn content
+        
+let effect (eff: unit -> unit): Parser<unit, 'TState> =
+    fun stream -> eff(); Reply(())
+
+let effectSatisfies (eff: unit -> bool): Parser<unit, 'TState> =
+    fun stream ->
+        let status = if eff() then Ok else Error
+        Reply(status, (), NoErrorMessages)
+
+let betweenStrings (openStr: string) (closeStr: string) =
+    let mutable s = 0
+    let pOpenScope = pstring openStr .>> effect (fun _ -> s <- s + 1)
+    let pCloseScope = pstring closeStr .>> effect(fun _ -> s <- s - 1)
+    let pScopeText = attempt pOpenScope <|> attempt pCloseScope <|> anyString 1
+    let isOuterScope = effectSatisfies(fun () -> s = 1) <?> $"Scope = {s}"
+
+    pOpenScope >>. manyTill pScopeText (isOuterScope .>> pCloseScope) |>> String.concat ""
+
+let between pStart pEnd pBetween =
+    let mutable s = 0
+    let pOpenScope = pStart .>> effect (fun _ -> s <- s + 1)
+    let pCloseScope = pEnd .>> effect(fun _ -> s <- s - 1)
+    let pScope = attempt pOpenScope <|> attempt pCloseScope <|> pBetween
+    let isOuterScope = effectSatisfies(fun _ -> s = 1) <?> $"Scope = {s}"
+
+    pOpenScope >>. skipManyTill pScope (isOuterScope .>> pCloseScope)
+    
+let sample0 = "{scope1 {scope2 {scope3}}}"
+
+printfn "String length = %O" sample0.Length; 
+
+sample0
+|> Seq.mapi(fun i c -> $"{i+1}:{c}")
+|> String.concat " "
+|> printfn "Indexed string = %O"
+
+sample0
+|> run (betweenStrings "{" "}")
+
+#!fsharp
+
+let betweenStrings (openStr: string) (closeStr: string) =
+    let pOpenScope = pstring openStr .>> updateUserState (fun s -> s + 1)
+    let pCloseScope = pstring closeStr .>> updateUserState (fun s -> s - 1)
+    let pScopeText = attempt pOpenScope <|> attempt pCloseScope <|> anyString 1
+    let isOuterScope = userStateSatisfies (fun s -> s = 1)
+
+    setUserState 0 >>. pOpenScope >>. manyTill pScopeText (isOuterScope .>> pCloseScope) |>> String.concat ""
+
+let sample0 = "{scope1 {scope2 {scope3}}}"// other"
+
+printfn "String length = %O" sample0.Length; 
+
+sample0
+|> Seq.mapi(fun i c -> $"{i+1}:{c}")
+|> String.concat " "
+|> printfn "Indexed string = %O"
+
+sample0|> runParserOnString (betweenStrings "{" "}") 0 ""
+
+#!fsharp
+
+type FData = {
+    Scope: int
+    Name: string
+    Position: Position
+}
+type State = {    
+    CurrentScope: int 
+    CurrentScopeOnCallStack: int list
+    CallScope: int
+    FDataList: FData list
+}
+with
+    static member init = {
+        FDataList = []
+        CallScope = 0
+        CurrentScopeOnCallStack = [-1] //[]
+        CurrentScope = 0
+    }
+
+    member state.CallScopeOpen(name: string, position: Position): State =
+        let fData = {
+            Name = name
+            Position = position
+            Scope = state.CallScope
+        }
+        { state with
+            CurrentScope = state.CurrentScope + 1
+            CurrentScopeOnCallStack = state.CurrentScope :: state.CurrentScopeOnCallStack
+            CallScope = state.CallScope + 1
+            FDataList = fData :: state.FDataList
+        }
+
+    member state.NonCallScopeOpen(): State =
+        { state with
+            CurrentScope = state.CurrentScope + 1
+        }
+
+    member state.ScopeClose(): State =
+        (*let scopeOnCurrentCall, restOfStack =
+            match state.CurrentScopeOnCallStack with
+            | [] -> -1, []
+            | h::tl -> h, tl*)
+        let scopeOnCurrentCall::restOfStack = state.CurrentScopeOnCallStack
+        
+        if state.CurrentScope - 1 > scopeOnCurrentCall
+        then // stil in call scope - decrementing current scope
+            {state with
+                CurrentScope = state.CurrentScope - 1
+            }
+        else //exiting call scope
+            {state with
+                CurrentScope = state.CurrentScope - 1
+                CurrentScopeOnCallStack = restOfStack
+                CallScope = state.CallScope - 1
+            }
+
+    member this.toShortString() = {|
+            CurrentScopeOnCallStack = this.CurrentScopeOnCallStack
+            CurrentScope = this.CurrentScope |}.ToString()
+
+let callScopeOpenHandle (name: string, pos: Position) (stream: CharStream<State>) =
+    let state = stream.UserState
+    stream.UserState <- state.CallScopeOpen(name, pos)//stream.Position)
+
+let nonCallScopeOpenHandle (stream: CharStream<State>) =
+    let state = stream.UserState
+    stream.UserState <- state.NonCallScopeOpen()
+
+let closeScopeHandle (stream: CharStream<State>) =
+    let state = stream.UserState
+    stream.UserState <- state.ScopeClose()
+
+let isReserved name = 
+    ["import"; "for"; "if"; "while"; "try";]
+    |> Set.ofList 
+    |> Set.contains name
+
+let ident: Parser<string, State> =
+    let isAsciiIdStart c = isAsciiLetter c || c = '_'
+    let isAsciiIdContinue c = isAsciiLetter c || isDigit c || c = '_'
+    identifier <| IdentifierOptions(isAsciiIdStart = isAsciiIdStart, isAsciiIdContinue = isAsciiIdContinue)
+
+let functionCallOpen: Parser<unit, State> =
+    ident .>> spaces .>> skipChar '('
+    >>>= fun name pos stream ->
+        if isReserved name 
+        then nonCallScopeOpenHandle stream
+        else callScopeOpenHandle (name, pos) stream
+        Reply(Ok, (), NoErrorMessages)
+    
+let nonCallOpen: Parser<unit, State> =
+    skipChar '(' <|> skipChar '{'
+    >>= fun _ stream ->
+        nonCallScopeOpenHandle stream
+        Reply(Ok, (), NoErrorMessages)
+
+let parseClose: Parser<unit, State> =
+    skipChar ')' <|> skipChar '}'
+    >>= fun _ stream -> 
+        closeScopeHandle stream
+        Reply(Ok, (), NoErrorMessages)
+
+let preconditionParser =
+    let parser = attempt functionCallOpen <|> attempt parseClose <|> skipAnyChar
+    skipString "precondition">>. spaces 
+    >>. between ( skipChar '{') (skipChar '}') parser
+
+let anonFunctionOpen: Parser<unit, State> =
+    (ident .>> spaces .>> skipChar '=' .>> spaces) |> attempt |> opt
+    .>> skipString "function" .>> spaces .>>. betweenStrings "(" ")" .>> spaces
+    .>>. opt (skipString "returns" >>. spaces >>. ident) .>> spaces
+    .>> optional (
+        //skipString "precondition" .>> spaces .>> betweenStrings "{" "}"
+        preconditionParser
+        ) .>> spaces
+    .>> skipChar '{'
+    >>>= fun ((name, args), retType) pos stream ->
+        let name = 
+            let ret = if retType.IsSome then "returns " + retType.Value else ""
+            let name = if name.IsSome then $"{name.Value} = " else ""
+            name + $"function({args})" + ret
+        callScopeOpenHandle (name, pos) stream
+        Reply(Ok, (), NoErrorMessages)
+
+let functionDeclarationOpen: Parser<unit, State> =
+    skipString "function" >>. spaces >>. ident .>> spaces .>>. betweenStrings "(" ")" .>> spaces
+    .>>. opt (skipString "returns" >>. spaces >>. ident) .>> spaces
+    .>> optional (
+        //skipString "precondition" .>> spaces .>> betweenStrings "{" "}"
+        preconditionParser
+        ) .>> spaces
+    .>> skipChar '{'
+    >>>= fun ((name, args), retType) pos stream ->
+        let name = 
+            let ret = if retType.IsSome then " returns " + retType.Value else ""
+            $"{name}({args})" + ret
+        callScopeOpenHandle (name, pos) stream
+        Reply(Ok, (), NoErrorMessages)
+
+let defineFeatureOpen: Parser<unit, State> =
+    ident .>> spaces .>> skipChar '=' .>> spaces .>> skipString "defineFeature" .>> spaces .>> skipChar '('
+    >>>= fun name pos stream ->
+        let name = $"{name} = defineFeature"
+        callScopeOpenHandle (name, pos) stream
+        Reply(Ok, (), NoErrorMessages)
+
+let definePredicateOpen: Parser<unit, State> =
+    skipString "predicate" >>. spaces >>. ident .>> spaces .>>. betweenStrings "(" ")" .>> spaces .>> skipChar '{'
+    >>>= fun (name, args) pos stream ->
+        let name = $"predicate {name}({args})"
+        callScopeOpenHandle (name, pos) stream
+        Reply(Ok, (), NoErrorMessages)
+
+let skipComment: Parser<unit, State> =
+    choice [
+        skipBetweenStrings "/*" "*/"
+        skipString "//".>> skipRestOfLine true
+    ]
+
+(*
+let parser, parserRef = createParserForwardedToRef()
+
+let pp: Parser<unit, State> = 
+    choice [
+        attempt defineFeatureOpen
+        attempt functionDeclarationOpen
+        attempt anonFunctionOpen //<!> "Anon function open"
+        attempt functionCallOpen //<!> "Call function scope"
+        attempt nonCallOpen //<!> "Non call scope open"
+        attempt parseClose //<!> "Scope close"
+        skipAnyChar
+    ]
+    .>> (eof <|> parser)
+
+parserRef.Value <- pp
+*)
+
+let parser: Parser<unit, State> =
+    let choiceParser = choice [
+        attempt skipComment
+        attempt definePredicateOpen
+        attempt defineFeatureOpen //<!> "Feature declaration open"
+        attempt functionDeclarationOpen //<!> "Function declaration open"//
+        attempt anonFunctionOpen //<!> "Anon function open"
+        attempt functionCallOpen //<!> "Call function scope"//
+        attempt nonCallOpen //<!> "Non call scope open"//
+        attempt parseClose //<!> "Scope close"//
+        skipAnyChar
+    ]
+
+    skipManyTill choiceParser eof
+
+let extractCallScopeData: ParserResult<unit, State> -> string array =
+    let space (n: int) = System.String(' ', n)
+    let alignTo (n: int) (s: string) = if s.Length < n then s + space (n - s.Length) else s
+
+    function
+    | Failure (reason, _, _) -> 
+        failwith reason
+    | Success (_, state, _) -> 
+         state.FDataList |> List.toArray |> Array.rev
+        |> Array.map(fun data ->
+            let line = data.Position.Line |> string |> alignTo 8
+            let column = data.Position.Column |> string |> alignTo 8
+            let scope = data.Scope |> string |> alignTo 5
+            let shift = space (4 * (data.Scope + 1))
+
+            $"{line}{column}{scope}{shift}|{data.Name}"
+        )
+
+let printResults parserResult = 
+    let header = $"Line    Col     Scope    Name"
+    printfn "%s" header
+    parserResult
+    |> extractCallScopeData
+    |> Array.iter (printfn "%s")
+
+let saveResults parserResult =
+    let path = __SOURCE_DIRECTORY__ + "\\CallStack.txt"
+    let header = $"Line    Col     Scope    Name"
+    System.IO.File.WriteAllLines(path, [|header|])
+
+    let lines = extractCallScopeData parserResult
+    System.IO.File.WriteAllLines(path, lines)
+    
+sample
+|> runParserOnString parser State.init ""
+|> printResults
+
+#!fsharp
+
+//precondition parser test
+
+let between pStart pEnd pBetween =
+    let mutable s = 0
+    let pOpenScope = pStart .>> effect (fun _ -> s <- s + 1)
+    let pCloseScope = pEnd .>> effect(fun _ -> s <- s - 1)
+    let pScope = attempt pOpenScope <|> attempt pCloseScope <|> pBetween
+    let isOuterScope = effectSatisfies(fun _ -> s = 1) <?> $"Scope = {s}"
+
+    pOpenScope >>. skipManyTill pScope (isOuterScope .>> pCloseScope)
+
+
+let preconditionParser3 =
+    let parser = attempt functionCallOpen <|> attempt parseClose <|> skipAnyChar
+    skipString "precondition">>. spaces 
+    >>. between ( skipChar '{') (skipChar '}') parser
+
+"""precondition 
+{
+    annotation {"Name": "Some intput field"}
+    isAnything(definition.someInputField);
+
+    annotation {"Name": "Other intput field"}
+    isLength(definition.lengthInputField, LENGTH_BOUNDS);
+}
+"""
+|> runParserOnString preconditionParser3 State.init ""
+|> printResults
+
+#!fsharp
+
+//test cases
+"""FeatureScript 1948;
+import(path : "onshape/std/common.fs", version : "1948.0");
+import(path : "3354b8b7ffd5f9beaf396a63", version : "7f0cdf087205a7f1094b09c5"); //map utils
+
+export predicate cacheStoragePredicate(definition)
+{
+    annotation { "Name" : "Storage", "UIHint" : UIHint.ALWAYS_HIDDEN, "Default" : "undefined" }
+    definition.storage->isAnything();
+}
+
+/**
+ * Caches definition for a given set of hash key pararameters.
+ *
+ *  @param arg {{
+ *      @field hashKeys {array}: Array of names of hashing field names
+ *      @field storageName {string}: @optional Name of storage field, defaults to `"storage"`
+ *      @field exclude {array}: @optional Array of additional field names to exclude from caching
+ *      @field enums {map}: @optional Map of enum field names to enum type.
+ *      @field defaultCache {map}:  @optional map of format `{ "hashMap1": definition1, ... }` for storage initialization.
+ * }}
+ */
+export function cacheDefinition(oldDefinition is map, definition is map, arg is map) returns map
+precondition
+{
+    arg.hashKeys is array;
+    arg.storageName is string || arg.storageName is undefined;
+    arg.exclude is array || arg.exclude is undefined;
+    arg.enums is map || arg.enums is undefined;
+    //arg.include is array || arg.include is undefined;
+    arg.defaultCache is map || arg.defaultCache is undefined;
+}
+{
+    const hashKeys = arg.hashKeys;
+    const storageName = arg.storageName is undefined ? "storage" : arg.storageName;
+
+    arg.enums = arg.enums is undefined ? {} : arg.enums;
+
+    var protected = [[storageName] /*, hashKeys*/]; //Hash keys should be stored
+    if (arg.exclude is array)
+        protected = append(protected, arg.exclude);
+    //else if (arg.include is array)
+    protected = concatenateArrays(protected);
+
+    var hash = makeHash(definition, hashKeys);
+    var oldHash = makeHash(oldDefinition, hashKeys);
+
+    var storage = definition[storageName];
+
+    if (!(storage is map))
+    {
+        //println("Initializing storage");
+        storage = {};
+        if (arg.defaultCache is map)
+            for (var entry in arg.defaultCache)
+            {
+                var hash = makeHash(entry.key, hashKeys);
+                storage[hash] = storeWithType(excludeKeys(entry.value, protected));
+            }
+    }
+
+    //If driving parameters not changed or oldDefinition is undefined or store for the hash is empty - Store definition
+    if (hash == oldHash || storage[hash] is undefined)
+    {
+        //println("Driving parameters not changed. Store definition");
+        storage[hash] = storeWithType(excludeKeys(definition, protected));
+    }
+    else //If driving parameter changed - restore corresponding definition state
+    {
+        //println("Existing hash of driving parameters. Restore definition.");
+        definition = restoreWithType(definition, storage[hash], arg.enums);
+    }
+
+    storage.hashKeys = arg.hashKeys;
+    //storage.enums = arg.enums; //The problem may be in the lost enum definition again
+    definition[storageName] = storage;
+
+    return definition;
+}
+
+/** Restores cache into definition if exists or returns current definition if not.
+ *  @param arg {{
+ *      @field storageName {string}: @optional Name of storage field of definition. Defaults to `storage`
+ *      @field hashMap {map}: Map of key-value pairs of hashing parameters.
+ *      @field enums {map}: @optional Map of enum field names to enum type.
+ * }}
+ */
+export function restoreCached(definition is map, arg is map) returns map
+precondition
+{
+    arg.storageName is string || arg.storageName is undefined;
+    arg.hashMap is map || arg.hashMap is undefined;
+    arg.enums is map || arg.enums is undefined; //enums map should be passed explicitly as seems like if being passed through storage enums loose type tag
+
+    definition[arg.storageName] is map || definition[arg.storageName] is undefined;
+}
+{
+    const storageName = arg.storageName is undefined ? "storage" : arg.storageName;
+
+    if (!(definition[storageName] is map))
+        return definition;
+
+    arg.enums = arg.enums is undefined ? {} : arg.enums;
+
+    const hash = makeHash(arg.hashMap, definition[storageName].hashKeys);
+
+    const cashedDefinition = definition[storageName][hash];
+
+    if (cashedDefinition is undefined)
+        return definition;
+    else
+        return restoreWithType(definition, cashedDefinition, arg.enums);
+}
+
+function makeHash(definition is map, keys is array) returns string
+{
+    return onlyKeys(definition, keys)->toString();
+}
+
+function storeWithType(definition is map) returns map
+{
+    const storeArray = function(arr)
+        {
+            for (var i = 0; i < size(arr); i += 1)
+                arr[i] = storeWithType(arr[i]);
+            return arr;
+        };
+
+    for (var key in keys(definition))
+    {
+        if (definition[key] is string) //enum handling, no enum check by default to transform all enums into strings
+            definition[key] = { "type" : "string", "value" : toString(definition[key]) };
+        else if (definition[key] is Query)
+            definition[key] = { "type" : "Query", "value" : definition[key] };
+        else if (definition[key] is array)
+            definition[key] = { "type" : "array", "value" : storeArray(definition[key]) };
+        else if (definition[key] is LookupTablePath)
+            definition[key] = { "type" : "LookupTablePath", "value" : definition[key] };
+        else
+            definition[key] = { "type" : "other", "value" : definition[key] };
+    }
+    return definition;
+}
+
+function restoreWithType(definition is map, stored is map, enums is map) returns map
+{
+    return mergeMaps(definition, restoreWithType(stored, enums));
+}
+
+function restoreWithType(stored is map, enums is map) returns map
+{
+    const restoreArr = function(arr)
+        {
+            for (var i = 0; i < size(arr); i += 1)
+                arr[i] = restoreWithType(arr[i], enums);
+            return arr;
+        };
+
+    for (var key in keys(stored))
+    {
+        var storedType = stored[key]["type"];
+        var storedValue = stored[key].value;
+
+        if (storedType == "Query") //Query handling
+            stored[key] = storedValue as Query;
+        else if (storedType == "string" && enums[key] is map) //Enum handling
+            stored[key] = enums[key][storedValue];
+        else if (storedType == "array") //Array handling
+            stored[key] = restoreArr(storedValue);
+        else if (storedType == "LookupTablePath")
+            stored[key] = storedValue as LookupTablePath;
+        else
+            stored[key] = storedValue;
+    }
+    return stored;
+}
+
+/**
+ *  Counts array parameter entries of definition. Count parameter should be of string type. Returns definition.
+ *  Currently do not working with `cacheDefinition`.
+ */
+export function countArrayParameterEntries(definition is map, arrParameterName is string, countParameterName is string) returns map
+{
+    var arrSize = size(definition[arrParameterName]);
+
+    if (arrSize > 0)
+        for (var i = 0; i < arrSize; i += 1)
+            definition[arrParameterName][i][countParameterName] = toString(i + 1);
+
+    return definition;
+}
+"""
+|> runParserOnString parser State.init ""
+|> printResults
+
+#!fsharp
+
+let loopParser (p: Parser<unit, State>): Parser<unit, State> =
+    fun stream ->
+        let mutable reply = Reply ()
+        while not stream.IsEndOfStream && (reply.Status <> FatalError || reply.Status <> Error) do
+            reply <- p stream
+
+        reply
+
+let callStackParser: Parser<unit, State> = 
+    choice [
+        attempt defineFeatureOpen
+        attempt functionDeclarationOpen
+        attempt anonFunctionOpen //<!> "Anon function open"
+        attempt functionCallOpen //<!> "Call function scope"
+        attempt nonCallOpen //<!> "Non call scope open"
+        attempt parseClose //<!> "Scope close"
+        skipAnyChar
+    ]
+
+sample
+|> runParserOnString (loopParser callStackParser) State.init ""
+|> printResults
+
+#!fsharp
+
+/// identifyer
+let ident: Parser <string, unit> =
+    let isAsciiIdStart c = isAsciiLetter c || c = '_'
+    let isAsciiIdContinue c = isAsciiLetter c || isDigit c || c = '_'
+    identifier <| IdentifierOptions(isAsciiIdStart = isAsciiIdStart, isAsciiIdContinue = isAsciiIdContinue)
+
+/// comment
+let comment: Parser<string option, unit> =
+    let singleLine = skipString "//" >>. restOfLine true
+    let multiLine = betweenStrings "/*" "*/"
+        //skipString "/*" >>. manyTill (anyString 1) (skipString "*/") .>> spaces |>> String.concat ""
+    let docString = betweenStrings "/**" "*/"
+        //skipString "/**" >>. manyTill anyChar (pstring "*/") .>> spaces
+    [singleLine; docString; multiLine; ] |> List.map attempt |> choice |> opt
+
+///named function declaration
+let namedFunctionDeclaration =
+    tuple5
+        (opt (pstring "export") .>> spaces) //export 
+        (skipString "function" >>. spaces >>. ident .>> spaces) // function name
+        (betweenStrings "(" ")" .>> spaces) //>>= fun args -> run ( sepBy (manyChars anyChar) (pchar ',' .>> spaces)) args |> preturn // arguments
+        (opt (pstring "returns" >>. spaces >>. ident) .>> spaces) //returns
+        (opt ( skipString "precondition" .>> spaces .>> betweenStrings "{" "}" .>> spaces))//skip optional precondition
+            .>>. (betweenStrings "{" "}") // function body
+
+"export function evaluateQuery(query is Query, context is Context) returns array
+{
+    const arr = arr->mapArray(function(item)
+    {
+        return sin(item) + cos(item);
+    });
+    return evaluateQuery(context, query);
+}"
+|> run namedFunctionDeclaration 
+
+///anonymous function declaration
+let anonymousFunctionDeclaration =
+    tuple4
+        (comment .>> spaces //comment
+            .>> skipString "function" .>> spaces) // skip function
+        (betweenStrings "(" ")" .>> spaces) //arguments
+        (opt (pstring "returns" >>. spaces >>. ident) .>> spaces) //returns
+        (opt ( skipString "precondition" .>> spaces .>> betweenStrings "{" "}" .>> spaces))//skip optional precondition
+            >>. (betweenStrings "{" "}") // function body
+
+"// Evaluates sum of sin and cosine
+function(item) returns number
+    precondition
+    {
+        //some precondition
+    }
+    {
+        return sin(item) + cos(item);
+    }"
+//|> run (anonymousFunctionDeclaration)
+
+//statement
+let statement =
+    opt (pstring "export") .>> spaces .>> (skipString "const" <|> skipString "var") .>> spaces 
+    .>>. ident .>> spaces .>> skipChar '=' .>> spaces .>>. many1CharsTill anyChar (pchar ';')
+
+"export const myFeature = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        // Define the parameters of the feature type
+    }
+    {
+        // Define the function's action
+    });"
+//|> run statement
+
+//function call
+let functionCall =
+    ident.>> spaces .>>. betweenStrings "(" ")"
+
+"defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        // Define the parameters of the feature type
+    }
+    {
+        // Define the function's action
+    })"
+//|> run functionCall
+
+#!fsharp
+
+type Expression =
+    | Literal of string
+    | Call of FunctionCall
+    | AnonFunction of AnonFunctionDeclaration
+    | Statement of name: string * expression: FunctionCall seq
+    | Declaration of FunctionDeclaration
+
+and FunctionCall = {
+    Name: string
+    Arguments: Expression seq
+}
+and FunctionDeclaration = {
+    Comment: string option
+    Name: string
+    Arguments: Identifyer seq
+    Returns: string option
+    Body: Expression seq
+}
+and AnonFunctionDeclaration = {
+    //Comment: string option
+    //Name: string option
+    Arguments: Identifyer seq
+    Returns: string option
+    Body: Expression seq
+}
